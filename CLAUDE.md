@@ -7,12 +7,20 @@ clusters). Léelo antes de tocar cualquiera de los repos listados abajo si no
 tienes ya este contexto cargado en la conversación.
 
 Diagramas del entramado (actualízalos junto con este archivo cuando algo del
-mapa cambie — si no, se desincronizan rápido):
-- [`arquitectura-devops.mmd`](arquitectura-devops.mmd): flujo CI/CD de los
-  dos flujos (qué repo dispara qué, qué commitea/publica qué).
-- [`infraestructura-lab.mmd`](infraestructura-lab.mmd): qué corre dónde en
-  el laptop (clusters kind, namespaces, runners self-hosted) — el "mapa
-  físico", separado del flujo.
+mapa cambie — si no, se desincronizan rápido; cada `.mmd` tiene su `.png`
+renderizado al lado, también hay que regenerarlo):
+- [`arquitectura-devops.mmd`](arquitectura-devops.mmd) /
+  [`.png`](arquitectura-devops.png): flujo CI/CD de los dos flujos (qué repo
+  dispara qué, qué commitea/publica qué).
+- [`infraestructura-lab.mmd`](infraestructura-lab.mmd) /
+  [`.png`](infraestructura-lab.png): qué corre dónde en el laptop (clusters
+  kind, namespaces, runners self-hosted) — el "mapa físico", separado del
+  flujo.
+
+Para regenerar un PNG tras editar un `.mmd`:
+`npx -y @mermaid-js/mermaid-cli -i archivo.mmd -o archivo.png -b white -w 2200`
+(el comentario inicial del `.mmd` debe ser una sola línea `%% ...` — varias
+líneas `%%` seguidas antes del `flowchart` rompen el parser de esa CLI).
 
 Hay **dos flujos que no deben mezclarse conceptualmente**: el flujo real de la
 empresa (parcialmente reproducido en local) y el laboratorio nuevo
