@@ -83,12 +83,17 @@ scripts) ya está automatizado end-to-end, probado en vivo:
 - Construye y pushea la imagen con tag `lab-dev-<run>-<sha8>` (distinto de
   `dev-<run>-<sha8>` de `main.yml`, para no chocar tags en Docker Hub — cada
   workflow tiene su propia numeración de `GITHUB_RUN_NUMBER`).
-- Checkout de `argocd-kind-lab` y `generic-charts-ms` (ambos públicos, sin
-  token) dentro del mismo job.
+- Checkout de `argocd-kind-lab` (con `DEPLOY_REPO_PAT`, necesita push) y
+  `generic-charts-ms` (público, sin token) dentro del mismo job.
+- Edita in-place `artifactory/releases/<microservicio>/values.yaml` en el
+  checkout de `argocd-kind-lab` (con `yq`, solo `image.repository`/`image.tag`)
+  y lo **commitea + pushea a `main` de `argocd-kind-lab`** antes de publicar
+  — es lo que deja rastro en git de qué tag se desplegó y cuándo (push
+  directo, no PR: el propio `deploy-lab.yml` ya dispara con push a main, un
+  PR ahí no sumaría revisión adicional). Un microservicio nuevo necesita su
+  propia carpeta bajo `artifactory/releases/`, no reusar la de otro.
 - Corre `artifactory/publish-release-chart.sh` de `argocd-kind-lab` tal cual
-  (vendorizado, ver gotcha de abajo), con un `values.yaml` generado al vuelo
-  (copia de `artifactory/example-values-chart/values.yaml` + `yq` con el tag
-  nuevo).
+  sobre ese archivo ya actualizado (vendorizado, ver gotcha de abajo).
 - Aplica el `ApplicationSet` y fuerza `argocd.argoproj.io/refresh=hard` en la
   `Application` (necesario, ver gotcha de cacheo de versión más abajo).
 - **Runner**: nuevo self-hosted dedicado, `actions.runner.elioxrome-mc-user-fastapi.laptop-eliezer-romero-mc-user-fastapi.service`
@@ -99,7 +104,10 @@ scripts) ya está automatizado end-to-end, probado en vivo:
   laptop ahora, uno por repo.
 - **Secrets nuevos** en `mc-user-fastapi`: `ARTIFACTORY_USER` /
   `ARTIFACTORY_PASSWORD` (copiados a mano desde
-  `argocd-kind-lab/.generated/artifactory-admin.env`).
+  `argocd-kind-lab/.generated/artifactory-admin.env`). El checkout+push a
+  `argocd-kind-lab` reusa el secret `DEPLOY_REPO_PAT` que ya existía (el
+  mismo con el que `main.yml` empuja a `eliox-platform-config`) — no se creó
+  uno nuevo, ese PAT ya tenía scope sobre los repos de `elioxrome`.
 
 Además existe `argocd/applicationsets/digital-guestbook-appset.yaml`: un
 segundo ejemplo, sobre la instancia `argocd-digital`, que usa el generador
@@ -177,10 +185,11 @@ sirviendo para otros microservicios que todavía no tengan su propio
 ./artifactory/publish-chart.sh ~/works/gitops-eliox/generic-charts-ms
 
 # 2. Release chart por microservicio/entorno: un values.yaml a mano + nombre + versión
-#    (copia/edita artifactory/example-values-chart/values.yaml con el tag de imagen que quieras)
+#    (edita artifactory/releases/<microservicio>/values.yaml con el tag de imagen
+#    que quieras — una carpeta por microservicio, no reusar la de otro)
 ./artifactory/publish-release-chart.sh \
   ~/works/gitops-eliox/generic-charts-ms \
-  ./artifactory/example-values-chart/values.yaml \
+  ./artifactory/releases/mc-user-fastapi/values.yaml \
   mc-user-fastapi 0.1.0-dev
 ```
 Repite el paso 2 (con nueva versión o el mismo `0.1.0-dev` sobrescrito) cada
