@@ -1,0 +1,53 @@
+%% Infraestructura física del laboratorio (argocd-kind-lab) — estado al
+%% 2026-10-05, verificado en vivo (kubectl/docker, no de memoria).
+%% Complementa a arquitectura-devops.mmd (que es el flujo CI/CD); este
+%% diagrama es "qué corre dónde" en este laptop.
+
+flowchart TB
+
+    subgraph HOST["Laptop de Eliezer (bare metal)"]
+        direction TB
+
+        subgraph RUNNERS["Procesos self-hosted (systemd, fuera de kind)"]
+            direction LR
+            R1["Runner generic-charts-ms<br/>~/actions-runners/generic-charts-ms/"]
+            R2["Runner eliox-platform-config<br/>~/actions-runners/eliox-platform-config/"]
+            R3["Runner mc-user-fastapi<br/><b>huérfano, sin workflow que lo use</b><br/>~/actions-runners/mc-user-fastapi/"]
+        end
+
+        subgraph DOCKERNET["red docker 'kind' — 172.24.0.0/16"]
+            direction LR
+
+            subgraph HUBNODE["contenedor hub-control-plane (172.24.0.2)<br/>kind cluster <b>hub</b> — 1 nodo"]
+                direction TB
+                NS_IT4T["ns argocd-it4t<br/>(dueño de los CRDs de Argo)<br/>application-controller, applicationset-controller,<br/>repo-server, redis, server"]
+                NS_DIGI["ns argocd-digital<br/>(crds.install: false)<br/>mismos 5 componentes"]
+                NS_ART["ns artifactory<br/>artifactory-0 (router+core)<br/>artifactory-frontend, artifactory-jfbus<br/>artifactory-postgresql-0 (estado)"]
+                NS_APPS["ns apps<br/>pod mc-user-fastapi-platform-dev<br/>(flujo real)"]
+                NS_APPSDEV["ns apps-dev<br/>pod mc-user-fastapi-dev<br/>(flujo lab)"]
+            end
+
+            subgraph DIGINODE["contenedor digital-control-plane (172.24.0.3)<br/>kind cluster <b>digital</b> (spoke) — 1 nodo<br/><i>hoy vacío: sin Applications reales ahí</i>"]
+                direction TB
+                NS_DEF["namespaces base únicamente<br/>(default, kube-system, ...)"]
+            end
+        end
+
+        R1 -->|"kubectl --context kind-hub<br/>+ port-forward :8082"| NS_ART
+        R2 -->|"kubectl --context kind-hub<br/>+ port-forward :8082"| NS_ART
+        R2 -->|"kubectl apply / annotate"| NS_IT4T
+
+        NS_IT4T -->|"gestiona (sin spoke)"| NS_APPS
+        NS_IT4T -->|"gestiona (sin spoke)"| NS_APPSDEV
+        NS_DIGI -.->|"registrado vía Secret cluster-digital<br/>(ServiceAccount argocd-manager<br/>+ token de larga duración)<br/>server: https://digital-control-plane:6443"| DIGINODE
+    end
+
+    EXT1[("GitHub Actions<br/>(jobs encolados,<br/>esperan a que el runner<br/>correspondiente esté arriba)")] -.->|"long-poll"| R1
+    EXT1 -.->|"long-poll"| R2
+
+    style HOST fill:#fafafa,stroke:#999999
+    style DOCKERNET fill:#eef9f1,stroke:#2e9e5b
+    style HUBNODE fill:#eef5ff,stroke:#5b8def
+    style DIGINODE fill:#fff0f0,stroke:#cc6666
+    style RUNNERS fill:#fff7e6,stroke:#e0a500
+    style R3 fill:#ffe0e0,stroke:#cc0000

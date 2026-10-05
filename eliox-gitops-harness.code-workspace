@@ -1,0 +1,21 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../argocd-kind-lab"
+		},
+		{
+			"path": "../eliox-platform-config"
+		},
+		{
+			"path": "../generic-charts-ms"
+		},
+		{
+			"path": "../mc-user-fastapi"
+		}
+	],
+	"settings": {}
+}
+

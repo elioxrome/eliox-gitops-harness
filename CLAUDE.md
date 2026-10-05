@@ -6,6 +6,14 @@ repos reales y de laboratorio que conforman un mismo flujo GitOps
 clusters). Léelo antes de tocar cualquiera de los repos listados abajo si no
 tienes ya este contexto cargado en la conversación.
 
+Diagramas del entramado (actualízalos junto con este archivo cuando algo del
+mapa cambie — si no, se desincronizan rápido):
+- [`arquitectura-devops.mmd`](arquitectura-devops.mmd): flujo CI/CD de los
+  dos flujos (qué repo dispara qué, qué commitea/publica qué).
+- [`infraestructura-lab.mmd`](infraestructura-lab.mmd): qué corre dónde en
+  el laptop (clusters kind, namespaces, runners self-hosted) — el "mapa
+  físico", separado del flujo.
+
 Hay **dos flujos que no deben mezclarse conceptualmente**: el flujo real de la
 empresa (parcialmente reproducido en local) y el laboratorio nuevo
 (`argocd-kind-lab`). Ver la sección "Dos flujos" más abajo antes de asumir cuál
@@ -23,7 +31,7 @@ esa colisión a mano, el namespace de ArgoCD no lo hace por ti.
 
 | Repo | Rol | Ubicación local | Remoto |
 |---|---|---|---|
-| **mc-user-fastapi** | Microservicio real (FastAPI). Tiene su propio `Jenkinsfile` (usa `eliox-jenkins-shared-library`) y dos workflows de GitHub Actions independientes: `main.yml` (flujo real: build+push la imagen y abre PR a `eliox-platform-config`) y `deploy-lab.yml` (flujo del laboratorio: build+push con tag `lab-dev-*` + publica el release chart en Artifactory + fuerza sync en ArgoCD — ver "Automatización del laboratorio" más abajo). | `~/works/gitops-eliox/mc-user-fastapi` (clon activo, el que se edita) · `~/works/mc-user-fastapi` (clon viejo de mayo 2026, prototipo de un solo cluster `local-cluster`, no editar) | `github.com/elioxrome/mc-user-fastapi` |
+| **mc-user-fastapi** | Microservicio real (FastAPI). Tiene su propio `Jenkinsfile` (usa `eliox-jenkins-shared-library`) y `main.yml`: build+push de la imagen (tag `dev-<run>-<sha8>`) + PR a `eliox-platform-config`. Ya **no** tiene workflow propio para el lab — ese paso lo dispara `eliox-platform-config` (ver "Automatización del laboratorio"). | `~/works/gitops-eliox/mc-user-fastapi` (clon activo, el que se edita) · `~/works/mc-user-fastapi` (clon viejo de mayo 2026, prototipo de un solo cluster `local-cluster`, no editar) | `github.com/elioxrome/mc-user-fastapi` |
 | **eliox-platform-config** | Config real de la plataforma: un chart Helm por microservicio bajo `charts/`, values por entorno bajo `environments/<env>/`, `Applications` de ArgoCD bajo `argocd/applications/`. | `~/works/gitops-eliox/eliox-platform-config` | `github.com/elioxrome/eliox-platform-config` (branches: `main`, `gitops`, `feature/argocd`, PRs automáticos `pr-gitops-dev-*`) |
 | **eliox-jenkins-shared-library** | Librería compartida de Jenkins (`vars/enterprisePipeline.groovy`) que consumen los `Jenkinsfile` de cada microservicio vía `@Library('eliox-jenkins-shared-library@...')`. | `~/works/sabadell/eliox-jenkins-shared-library` (clon activo) · `~/works/devops/kind_cluster/eliox-jenkins-shared-library` (clon viejo de feb 2026, no editar) | `github.com/elioxrome/eliox-jenkins-shared-library` |
 | **devops-workflows** | Workflows reutilizables de GitHub Actions (CI build+push a GHCR, CD a VPS por Docker Compose) para otros proyectos de Eliezer. No forma parte directa del flujo de mc-user-fastapi, pero sigue la misma filosofía "build once, deploy many". | `~/works/devops-workflows` (clon activo) | `github.com/elioxrome/devops-workflows` |
@@ -61,53 +69,64 @@ una instancia ArgoCD Helm por tipo en el hub + Artifactory local (IaC en
 `generic-charts-ms`, publicado por su propio pipeline de GitHub Actions
 (runner self-hosted, label `kind-local`, instalado como systemd en este
 laptop: `actions.runner.elioxrome-generic-charts-ms.laptop-eliezer-romero.service`)
-a Artifactory. Cada microservicio solo aporta un `values.yaml` de pocas
-líneas; se empaqueta como "release chart" (`artifactory/publish-release-chart.sh`)
-que trae el chart genérico vendorizado como dependencia Helm real (no copia de
-templates). El `ApplicationSet` de ArgoCD en el lab
+a Artifactory. Cada microservicio aporta un `values.yaml` de pocas líneas
+(ver más abajo **de dónde** sale ese archivo — es importante, no es una copia
+propia del lab); se empaqueta como "release chart"
+(`artifactory/publish-release-chart.sh`) que trae el chart genérico
+vendorizado como dependencia Helm real (no copia de templates). El
+`ApplicationSet` de ArgoCD en el lab
 (`argocd/applicationsets/mc-user-fastapi-appset.yaml`) apunta a ese release
 chart en Artifactory, no a `eliox-platform-config`. Corre directo en el hub
 vía la instancia `argocd-it4t`, sin spoke, con un namespace por entorno
 (`apps-{env}`) — generador `list`, solo `dev` por ahora.
 
-### Automatización del laboratorio (2026-10-05)
+### Automatización del laboratorio — un solo `values.yaml` (2026-10-05)
 
-El paso manual de "publicar release chart + instalar en ArgoCD" (antes solo
-scripts) ya está automatizado end-to-end, probado en vivo:
+El paso de "publicar release chart + instalar/actualizar en ArgoCD" está
+automatizado end-to-end, probado en vivo. **Decisión clave: no hay un
+`values.yaml` separado para el lab.** La primera versión de esta
+automatización sí mantenía uno propio (en `mc-user-fastapi` y luego en
+`argocd-kind-lab`) — se descartó a propósito: dos archivos editables para lo
+mismo es exactamente la duplicación que no se quería. La única fuente
+editable es la que ya existía para el flujo real:
+`eliox-platform-config/environments/dev/mc-user-fastapi-values.yaml`.
 
-- **Dónde vive**: `mc-user-fastapi/.github/workflows/deploy-lab.yml` (no
-  `argocd-kind-lab`; se decidió así para no tener que registrar un runner
-  nuevo en un segundo repo cuando ya hacía falta uno dedicado a
-  `mc-user-fastapi`). Dispara con `push` a `main` **y** con `workflow_dispatch`
-  (el "botón" en GitHub).
-- Construye y pushea la imagen con tag `lab-dev-<run>-<sha8>` (distinto de
-  `dev-<run>-<sha8>` de `main.yml`, para no chocar tags en Docker Hub — cada
-  workflow tiene su propia numeración de `GITHUB_RUN_NUMBER`).
-- Checkout de `argocd-kind-lab` (con `DEPLOY_REPO_PAT`, necesita push) y
-  `generic-charts-ms` (público, sin token) dentro del mismo job.
-- Edita in-place `artifactory/releases/<microservicio>/values.yaml` en el
-  checkout de `argocd-kind-lab` (con `yq`, solo `image.repository`/`image.tag`)
-  y lo **commitea + pushea a `main` de `argocd-kind-lab`** antes de publicar
-  — es lo que deja rastro en git de qué tag se desplegó y cuándo (push
-  directo, no PR: el propio `deploy-lab.yml` ya dispara con push a main, un
-  PR ahí no sumaría revisión adicional). Un microservicio nuevo necesita su
-  propia carpeta bajo `artifactory/releases/`, no reusar la de otro.
-- Corre `artifactory/publish-release-chart.sh` de `argocd-kind-lab` tal cual
-  sobre ese archivo ya actualizado (vendorizado, ver gotcha de abajo).
-- Aplica el `ApplicationSet` y fuerza `argocd.argoproj.io/refresh=hard` en la
-  `Application` (necesario, ver gotcha de cacheo de versión más abajo).
-- **Runner**: nuevo self-hosted dedicado, `actions.runner.elioxrome-mc-user-fastapi.laptop-eliezer-romero-mc-user-fastapi.service`
-  (label `kind-local`, mismo patrón que el de `generic-charts-ms` pero
-  **no es el mismo runner** — un runner self-hosted solo puede registrarse
-  contra un repo a la vez; sin Organización de GitHub detrás no hay forma de
-  compartirlo entre repos personales). Dos servicios corriendo en este
-  laptop ahora, uno por repo.
-- **Secrets nuevos** en `mc-user-fastapi`: `ARTIFACTORY_USER` /
+- **Dónde vive**: `eliox-platform-config/.github/workflows/deploy-lab.yml`
+  (no en `mc-user-fastapi` ni en `argocd-kind-lab` — vive donde vive el
+  archivo que lo dispara). Trigger: `push` a la branch **`gitops`** con
+  filtro de `paths` sobre ese archivo exacto, **y** `workflow_dispatch`. No
+  dispara con el PR abierto, solo cuando se mergea (eso es lo que mueve la
+  branch `gitops`).
+- **No construye ninguna imagen propia.** Reusa la que ya construyó y pusheó
+  `mc-user-fastapi/main.yml` — mismo tag `dev-<run>-<sha8>` para los dos
+  despliegues (real y lab). Ya no existe el tag `lab-dev-*` de la primera
+  versión de esta automatización.
+- Pasos: checkout de `argocd-kind-lab` y `generic-charts-ms` (ambos
+  públicos, sin token — a diferencia de la primera versión, acá nadie
+  necesita permiso de push a ningún repo ajeno) → copia
+  `environments/dev/mc-user-fastapi-values.yaml` a un archivo **temporal,
+  nunca commiteado**, solo para inyectarle con `yq` el campo `nameOverride`
+  que exige `generic-charts-ms` (ver gotcha) y que no tiene sentido guardar
+  en el archivo real (ese campo no aplica al chart propio de
+  `charts/mc-user-fastapi` del flujo real) → `publish-release-chart.sh` →
+  `kubectl apply` del `ApplicationSet` → `argocd.argoproj.io/refresh=hard`
+  (necesario, ver gotcha de cacheo de versión más abajo).
+- **Runner**: self-hosted dedicado para `eliox-platform-config`
+  (`actions.runner.elioxrome-eliox-platform-config.laptop-eliezer-romero-eliox-platform-config.service`,
+  label `kind-local`). Un runner self-hosted solo puede registrarse contra
+  un repo a la vez (sin Organización de GitHub detrás no hay forma de
+  compartirlo entre repos personales), así que es uno nuevo, no el de
+  `generic-charts-ms`.
+- **Secrets** en `eliox-platform-config`: `ARTIFACTORY_USER` /
   `ARTIFACTORY_PASSWORD` (copiados a mano desde
-  `argocd-kind-lab/.generated/artifactory-admin.env`). El checkout+push a
-  `argocd-kind-lab` reusa el secret `DEPLOY_REPO_PAT` que ya existía (el
-  mismo con el que `main.yml` empuja a `eliox-platform-config`) — no se creó
-  uno nuevo, ese PAT ya tenía scope sobre los repos de `elioxrome`.
+  `argocd-kind-lab/.generated/artifactory-admin.env`).
+- **Pendiente de limpiar**: el runner self-hosted
+  `actions.runner.elioxrome-mc-user-fastapi.laptop-eliezer-romero-mc-user-fastapi.service`
+  (registrado para la primera versión, cuando `deploy-lab.yml` vivía en
+  `mc-user-fastapi`) quedó **sin ningún workflow que lo use** — `main.yml`
+  corre en `ubuntu-latest` (GitHub-hosted), no self-hosted. Se puede parar y
+  desregistrar (`./config.sh remove` desde `~/actions-runners/mc-user-fastapi/`,
+  más `sudo ./svc.sh uninstall`), no se hizo todavía.
 
 Además existe `argocd/applicationsets/digital-guestbook-appset.yaml`: un
 segundo ejemplo, sobre la instancia `argocd-digital`, que usa el generador
@@ -221,6 +240,36 @@ credenciales de git para esto.
 `.generated/` — se va ArgoCD, Artifactory y todo su contenido. No hay
 "apagar solo una parte"; si solo quieres liberar RAM temporalmente, para los
 pods en vez de borrar los clusters.
+
+**Parar/arrancar los runners self-hosted** (no hace falta borrar nada para
+esto — parar un runner no lo desregistra de GitHub, solo deja de escuchar
+jobs; si algo dispara un workflow mientras está parado, el job queda
+"Queued" hasta que lo vuelvas a arrancar, no se pierde):
+```bash
+# parar (p.ej. para no consumir mientras no trabajas en esto)
+sudo systemctl stop actions.runner.elioxrome-generic-charts-ms.laptop-eliezer-romero.service
+sudo systemctl stop actions.runner.elioxrome-eliox-platform-config.laptop-eliezer-romero-eliox-platform-config.service
+
+# arrancar de nuevo
+sudo systemctl start actions.runner.elioxrome-generic-charts-ms.laptop-eliezer-romero.service
+sudo systemctl start actions.runner.elioxrome-eliox-platform-config.laptop-eliezer-romero-eliox-platform-config.service
+
+# ver estado de los tres (incluye el huerfano de mc-user-fastapi)
+systemctl list-units --type=service --all | grep actions.runner
+```
+Los runners en sí son livianos estando parados — lo que de verdad pesa en
+RAM son los clusters kind y Artifactory, que siguen corriendo aunque pares
+los runners (pararlos no afecta esos).
+
+Para **desregistrar por completo** uno que ya no se usa (ej. el huérfano de
+`mc-user-fastapi`, ver "Pendiente de limpiar" en automatización del lab):
+```bash
+cd ~/actions-runners/<repo>
+sudo ./svc.sh stop
+sudo ./svc.sh uninstall
+./config.sh remove --token <token-de-baja>   # gh api -X POST repos/elioxrome/<repo>/actions/runners/remove-token --jq .token
+cd .. && rm -rf <repo>
+```
 
 ## Decisiones y gotchas ya resueltos (no los vuelvas a investigar)
 

@@ -1,0 +1,73 @@
+%% Entramado DevOps/GitOps de Eliezer — estado al 2026-10-05.
+%% Fuente de verdad: CLAUDE.md de este mismo repo. Si algo cambia en los
+%% repos reales, actualiza ambos archivos juntos.
+%%
+%% Idea central: UN solo values.yaml (en eliox-platform-config) gobierna
+%% los dos despliegues (real y laboratorio). El laboratorio no construye
+%% su propia imagen ni mantiene su propia copia del values — solo
+%% re-publica, tal cual, lo que ya quedó mergeado ahí.
+
+flowchart TD
+
+    subgraph REAL["① Flujo real de la empresa (parcialmente local)"]
+        direction TB
+        A1["mc-user-fastapi<br/>main.yml<br/>(GitHub-hosted: ubuntu-latest)"]
+        A2[("Docker Hub<br/>tag dev-&lt;run&gt;-&lt;sha8&gt;")]
+        A3["eliox-platform-config<br/>branch <b>gitops</b><br/>environments/dev/mc-user-fastapi-values.yaml<br/><i>— ÚNICA fuente editable —</i>"]
+        A4["Application<br/>mc-user-fastapi-platform-dev<br/>(ArgoCD argocd-it4t)"]
+        A5[("namespace apps<br/>pod mc-user-fastapi-platform-dev")]
+
+        A1 -->|"build + push"| A2
+        A1 -->|"abre PR pr-gitops-dev-*<br/>(branch pr-gitops-dev-dev-N-sha)"| A3
+        A3 -->|"merge manual del PR<br/>(punto de gobernanza)"| A3
+        A3 -->|"ArgoCD lee en vivo de git<br/>(sin empaquetar/versionar)"| A4
+        A4 --> A5
+    end
+
+    subgraph LAB["② Flujo del laboratorio (argocd-kind-lab)"]
+        direction TB
+        B1["eliox-platform-config<br/>deploy-lab.yml<br/>(self-hosted, label kind-local)"]
+        B1b["copia + yq nameOverride<br/>(temporal, NO se commitea)"]
+        B2["generic-charts-ms<br/>chart 'microservice'<br/>(checkout de solo lectura)"]
+        B3["argocd-kind-lab<br/>artifactory/publish-release-chart.sh"]
+        B4[("Artifactory<br/>example-repo-local/charts-values<br/>mc-user-fastapi-0.1.0-dev.tgz<br/><i>vendoriza el chart genérico adentro</i>")]
+        B5["ApplicationSet<br/>mc-user-fastapi<br/>(ArgoCD argocd-it4t)"]
+        B6["Application<br/>mc-user-fastapi-dev<br/>(generada por B5)"]
+        B7[("namespace apps-dev<br/>pod mc-user-fastapi-dev")]
+
+        A3 -->|"push a gitops<br/>(path: ...values.yaml)<br/>o workflow_dispatch"| B1
+        B1 --> B1b
+        B1b -->|"input"| B3
+        B2 -->|"checkout"| B3
+        B1 -->|"checkout"| B3
+        B3 -->|"publica wrapper"| B4
+        B1 -->|"kubectl apply"| B5
+        B5 -->|"genera (generador list, env: dev)"| B6
+        B6 -->|"targetRevision 0.1.0-dev<br/>+ refresh=hard forzado por B1<br/>(ArgoCD cachea por versión)"| B4
+        B6 --> B7
+    end
+
+    subgraph GC["Pipeline independiente del chart genérico"]
+        direction TB
+        D1["generic-charts-ms<br/>publish.yml<br/>(self-hosted, label kind-local)"]
+        D1 -->|"helm package + publica<br/>cada cambio en Chart.yaml/values.yaml/templates/**"| B4
+    end
+
+    subgraph INFRA["Infraestructura compartida — este laptop"]
+        direction TB
+        C1["kind cluster <b>hub</b><br/>argocd-it4t (dueño CRDs) + argocd-digital"]
+        C2["kind cluster <b>digital</b> (spoke)<br/>— no lo usa mc-user-fastapi —"]
+        C3["Artifactory<br/>(namespace artifactory, en hub)"]
+        C4["Runner: generic-charts-ms"]
+        C5["Runner: eliox-platform-config"]
+        C6["Runner: mc-user-fastapi<br/><b>⚠ sin uso desde que se movió<br/>deploy-lab.yml a eliox-platform-config</b>"]
+    end
+
+    A3 -.->|"ambos Applications<br/>conviven en el mismo<br/>namespace argocd-it4t<br/>(nombres distintos: no chocan)"| A4
+    A4 -.-> B6
+
+    style REAL fill:#eef5ff,stroke:#5b8def
+    style LAB fill:#fff7e6,stroke:#e0a500
+    style GC fill:#f3eefc,stroke:#8b5cf6
+    style INFRA fill:#f0f0f0,stroke:#888888
+    style C6 fill:#ffe0e0,stroke:#cc0000
